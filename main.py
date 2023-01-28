@@ -117,9 +117,6 @@ def get_std_count(session: requests.Session, courseID):
     response = session.post(
         url,
         data=payload,
-        headers={
-            "Referer": "https://jw.ustc.edu.cn/for-std/course-select/353951/turn/721/select",
-        },
     )
     return response.text[13:15], session
 
