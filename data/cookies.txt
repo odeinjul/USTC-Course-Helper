@@ -1,0 +1,4 @@
+SVRNAME:[]
+SESSION:[]
+fine_auth_token:[]
+fine_remember_login:-1

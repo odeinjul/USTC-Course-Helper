@@ -1,41 +1,19 @@
-# 这是一个示例 Python 脚本。
-
-# 按 ⌃R 执行或将其替换为您的代码。
-# 按 双击 ⇧ 在所有地方搜索类、文件、工具窗口、操作和设置。
 import os
 import sys
+import time
+import re
 import requests
 import time
 import json
 from lxml.html import document_fromstring
+import argparse
 import hashlib
 from bs4 import BeautifulSoup
 
-path = './data/'
-with open(path + '2023sp.json', 'r', encoding='utf-8') as fp:
-    data = json.load(fp)
-
-
-def get_validatecode(session: requests.Session) -> str:
-    import re
-    import pytesseract
-    from PIL import Image
-    from io import BytesIO
-
-    for attempts in range(20):
-        response = session.get(
-            "https://passport.ustc.edu.cn/validatecode.jsp?type=login"
-        )
-        stream = BytesIO(response.content)
-        image = Image.open(stream)
-        text = pytesseract.image_to_string(image)
-        codes = re.findall(r"\d{4}", text)
-        if len(codes) == 1:
-            break
-    return codes[0]
-
-
-def login(session: requests.Session, username, passwd):
+def mass(session: requests.Session):
+    path = './data/'
+    with open(path + '2023sp.json', 'r', encoding='utf-8') as fp:
+        data = json.load(fp)
     session.headers.update(
         {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
@@ -52,99 +30,119 @@ def login(session: requests.Session, username, passwd):
             "Upgrade-Insecure-Requests": "1",
         }
     )
-    session.cookies.set("lang", "zh")
-    response = session.get(
-        "https://passport.ustc.edu.cn/login?service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin",
-        headers={"Referer": "https://jw.ustc.edu.cn/"},
-    )
-    root = document_fromstring(response.text)
-    input = root.cssselect("input[name=CAS_LT]")
-    cas_lt = input[0].value
+    with open(path + 'cookies.txt', 'r', encoding='utf-8') as file:
+        cookies = file.readlines()
+    for cookie in cookies:
+        key = cookie.split(':')[0]
+        value = cookie.split(':')[1][:-1]
+        session.cookies.set(key, value)
+    url = "https://jw.ustc.edu.cn/for-std/course-select/"
+    r = session.get(url)
+    stu_assoc = r.url.split('/')[-1]
+    url = "https://jw.ustc.edu.cn/ws/for-std/course-select/open-turns"
+    payload = {'bizTypeId': '2', 'studentId': stu_assoc}
+    r = session.post(url, data=payload)
+    turn_id = BeautifulSoup(r.text, 'lxml').id.string
+    return stu_assoc, turn_id, data, session
 
-    response = session.post(
-        "https://passport.ustc.edu.cn/login",
-        data={
-            "model": "uplogin.jsp",
-            "service": "https://jw.ustc.edu.cn/ucas-sso/login",
-            "CAS_LT": cas_lt,
-            "warn": "",
-            "showCode": "1",
-            "username": username,
-            "password": passwd,
-            "button": "",
-            "LT": get_validatecode(session),
-        },
-        headers={
-            "Referer": "https://passport.ustc.edu.cn/login?service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin",
-        },
-        allow_redirects=True,
-    )
-    return session
-
-
-""""
-def login_fine(session: requests.Session):
-    finereportTargetUrl = "https://jw.ustc.edu.cn/webroot/decision"
-    username = '' 
-    fineReportPw = ''
-    password = hashlib.md5(fineReportPw.encode()).hexdigest()
-    validity = "-1"
-    url = finereportTargetUrl + "/login/cross/domain" + "?fine_username=" + username + "&fine_password=" + password + "&validity=" + validity
-    r = session.get(
-        url,
-        headers={
-            "Referer": "https://jw.ustc.edu.cn/home",
-        },
-    )
-    return session
-
-
-def fetch(session: requests.Session):
-    payload = {"turnId": "", "studentId": ""}
-    url = "https://jw.ustc.edu.cn/ws/for-std/course-select/addable-lessons?turnId=721&studentId="
+def fetch(session: requests.Session, stu_assoc, turn_id):
+    payload = {"turnId": turn_id, "studentId":  stu_assoc}
+    url = "https://jw.ustc.edu.cn/ws/for-std/course-select/addable-lessons"
     response = session.post(
         url,
-        #data=payload,
+        data=payload,
     )
-    print(response.text)
-    return response, session
-"""
+    #print(response.text)
+    return session
 
-
-def get_std_count(session: requests.Session, courseID):
-    payload = {"lessonIds[]": courseID}
+def get_std_count(session: requests.Session, course_assoc):
+    payload = {"lessonIds[]": course_assoc}
     url = "https://jw.ustc.edu.cn/ws/for-std/course-select/std-count"
     response = session.post(
         url,
         data=payload,
     )
-    return response.text[13:15], session
+    rule_ = '>\d+<'
+    std_count = re.findall(rule_, response.text)
+    return std_count[0][1:-1], session
 
+def check_course(session: requests.Session, args):
+    if args.watch:
+        code = args.watch
+    elif args.select:
+        code = args.select
+    else:
+        raise ValueError("Please specify a course.")
 
-def check_course(session: requests.Session, code):
-    std_limit = 0
+    std_limit = -1
+    course_assoc = 0
+    course_name = ''
     for course in data:
         if (course['code'] == code):
             std_limit = course['limitCount']
             course_name = course['course']['nameZh']
-            course_id = course['id']
+            course_assoc = course['id']
             break
-    while(1):
-        os.system('cls' if os.name == 'nt' else 'clear')
-        std_count, session = get_std_count(session, course_id)
-        print(f'Frequency: 5 SEC per query')
-        print(f'{course_name}: {std_count} / {std_limit}')
-        time.sleep(5)
+    assert std_limit != -1, "Can not find such course: " + code
+
+    if args.watch:
+        while (1):
+            os.system('cls' if os.name == 'nt' else 'clear')
+            std_count, session = get_std_count(session, course_assoc)
+            print(f'[WATCH]- Frequency: 5 SEC per query')
+            print(f'{course_name}: {std_count} / {std_limit}')
+            time.sleep(5)
+    elif args.select:
+        while (1):
+            os.system('cls' if os.name == 'nt' else 'clear')
+            std_count, session = get_std_count(session, course_assoc)
+            print(f'[SELECT] - Frequency: 5 SEC per query')
+            print(f'{course_name}: {std_count} / {std_limit}')
+            if int(std_count) < std_limit:
+                print(f'Available! - Sending request')
+                session, msg = apply_course(session, course_assoc, stu_assoc)
+                if msg == "时间冲突":
+                    break
+                elif msg == "教学班人数已满":
+                    continue
+
+            time.sleep(5)
+
     return session
 
 
+def apply_course(session: requests.Session, course_assoc):
+    payload = {"studentAssoc": stu_assoc, "lessonAssoc": course_assoc, "courseSelectTurnAssoc": turn_id,
+               "scheduleGroupAssoc": "", "virtualCost": "0"}
+    url = "https://jw.ustc.edu.cn/ws/for-std/course-select/add-request"
+    response = session.post(
+        url,
+        data=payload,
+    )
+    print(f'requestID - {response.text}')
+    url = "https://jw.ustc.edu.cn/ws/for-std/course-select/add-drop-response"
+    payload = {"studentId": stu_assoc, "requestId": response.text}
+    response = session.post(
+        url,
+        data=payload,
+    )
+    text_ = BeautifulSoup(response.text, 'lxml')
+    msg = str(text_.textzh)[8:-9]
+    print(f'{msg}！')
+    return session, msg
+
+
 if __name__ == '__main__':
-    username = sys.argv[1]
-    passwd = sys.argv[2]
-    code = sys.argv[3]
+    parser = argparse.ArgumentParser(description="USTC course helper")
+    parser.add_argument('-w', '--watch', metavar='[courseID]', type=str, help='the courseID you want to watch')
+    parser.add_argument('-s', '--select', metavar='[courseID]', type=str, help='the courseID you want to select, the '
+                                                                               'program will send application when '
+                                                                               'available')
+    parser.add_argument('-i', '--frequency', metavar='[sec]', type=int, default=5, help='how many (sec) to refresh '
+                                                                                        'the result')
+    args = parser.parse_args()
+
     session = requests.Session()
-    session = login(session, username, passwd)
-    # print(r.text)
-    # session = login_fine(session)
-    # print(session.cookies)
-    session = check_course(session, code)
+    stu_assoc, turn_id, data, session = mass(session)
+    # session = fetch(session, stu_assoc, turn_id)
+    session = check_course(session, args)
